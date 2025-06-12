@@ -1,0 +1,7 @@
+path: C:\Users\KiosK\Documents\Test Yolo\Dataset\SplitData\data.yaml
+train: ../train/images
+val: ../val/images
+test: ../test/images
+
+nc: 2
+names: ['fake', 'real']
