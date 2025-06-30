@@ -69,7 +69,7 @@ database_json = "./Data Pegawai/Json/database.json"
 # Load data wajah dari folder Joblib
 joblib_file = "./Data Pegawai/Joblib/database.joblib"
 
-confidence = 0.8
+confidence = 0.6
 last_seen = {}  # Dictionary untuk menyimpan status wajah terakhir terlihat
 face_data = {}
 loading_done = False  # Indikator bahwa proses load selesai
@@ -535,6 +535,9 @@ class MainContent(BoxLayout):
         self.orientation = 'vertical'
         self.size_hint = (0.8, 1)
         self.padding = dp(10)
+        self.last_recognition_time = 0
+        self.recognition_interval = 0.5  # detik, atur sesuai kebutuhan
+        self.recognition_thread_running = False
         # Panggil hapus_file_capture setiap 600 detik (10 menit)
         Clock.schedule_interval(self.hapus_file_capture, 600)
 
@@ -636,7 +639,7 @@ class MainContent(BoxLayout):
         self.add_widget(self.time_label)
 
         self.time_label.font_name = font_path
-        Clock.schedule_interval(self.update_time, 1.0)
+        Clock.schedule_interval(self.update_time, 0.5)
 
         # Layout untuk kamera dan instruksi di dalamnya
         self.camera_layout = RelativeLayout(
@@ -1114,97 +1117,105 @@ class MainContent(BoxLayout):
         self.update_location(lat=self.manual_lat, lon=self.manual_lon)
 
     def on_sync_logo_pressed(self, instance, touch):
-        # URL API
-        url = "https://hrd.asmat.app/api/v2/face-recognition"
+        # URL API dasar
+        base_url = "https://hrd.asmat.app/api/v2/face-recognition"
 
         # Lokasi penyimpanan file JSON dan Joblib
         json_path = "./Data Pegawai/Json/database.json"
         joblib_path = "./Data Pegawai/Joblib/database.joblib"
 
-        # Pastikan folder ada
+        # Pastikan folder tersedia
         os.makedirs(os.path.dirname(json_path), exist_ok=True)
         os.makedirs(os.path.dirname(joblib_path), exist_ok=True)
 
-        # Mengambil data dari API
-        response = requests.get(url)
-
-        success_content = MDBoxLayout(orientation='vertical',spacing=20, md_bg_color=(0, 0, 0, 0))
-        success_content.add_widget(Image(
-            source="assets/complete_icon.png",
-            size_hint=(1, None),
-            height=200, 
-            pos_hint={"center_x":0.5}
-        ))
-        success_container=MDBoxLayout(
-            size_hint=(None, None),
-            size=(dp(500), dp(60)),
-            pos_hint={"center_x":0.5, "center_y":0.5},
-            md_bg_color=(0.564, 0.874, 0.654, 1),
-            radius=[dp(25), dp(25), dp(25), dp(25)],
-            padding=[20, 10, 20, 10]
-                
-        )
-
-        success_label=MDLabel (text="[size=25]Sinkronisasi data berhasil![/size]", font_name="assets/GTVCS-Medium.ttf", halign="center", pos_hint={"center_x":0.5, "center_y":0.5}, markup=True)
-        success_container.add_widget(success_label)
-        success_content.add_widget(success_container)
-
         if self.sync_logo.collide_point(*touch.pos):
-            if response.status_code == 200:
+            # Ambil semua data dari seluruh halaman
+            all_data = []
+            page = 1
+            while True:
+                response = requests.get(f"{base_url}?page={page}")
+                if response.status_code != 200:
+                    print(f"❌ Gagal mengambil data dari halaman {page}")
+                    break
+
                 data = response.json()
+                if "data" not in data or not data["data"]:
+                    break
 
-                if "data" in data:
-                    extracted_data = []
+                all_data.extend(data["data"])
+                if page >= data.get("total_pages", 1):
+                    break
+                page += 1
 
-                    for item in data["data"]:
-                        nrp = item.get("nrp")
-                        face_encoding_str = item.get("face_encoding")
-
-                        # Mengonversi string encoding ke list Python
-                        try:
-                            face_encoding = ast.literal_eval(face_encoding_str) if face_encoding_str else []
-                        except:
-                            face_encoding = []
-
-                        # Menyimpan data dalam format JSON
-                        extracted_data.append({
-                            "nrp": nrp,
-                            "encodings": face_encoding
-                        })
-
-                    # Simpan ke file JSON
-                    with open(json_path, "w") as json_file:
-                        json.dump(extracted_data, json_file, indent=4)
-
-                    # Simpan ke file Joblib
-                    joblib.dump(extracted_data, joblib_path)
-
-                    print(f"Data berhasil disimpan ke:\n- {json_path}\n- {joblib_path}")
-                    thread = threading.Thread(target=load_joblib_data)
-                    thread.start()
-                    # Menampilkan notifikasi di UI KivyMD
-                    self.success_dialog = MDDialog(
-                        type="custom",
-                        height=80,
-                        radius=[dp(20), dp(20), dp(20), dp(20)],
-                        content_cls=success_content,
-                        text="[size=25]Sinkronisasi berhasil![/size]", 
-                        buttons=[
-                            MDFlatButton(
-                                text="[size=18]Tutup[/size]",
-                                on_release=lambda x: self.success_dialog.dismiss())])
-                    self.success_dialog.open()
-                    Clock.schedule_once(lambda x: self.success_dialog)
-                else:
-                    print("Data tidak ditemukan dalam response.")
-                    dialog = MDDialog(text="[size=25]Data tidak ditemukan dalam response.[/size]", buttons=[MDFlatButton(text="[size=18]OK[/size]",
-                                        on_release=lambda x: dialog.dismiss())])
-                    dialog.open()
-            else:
-                print(f"Request gagal dengan status code: {response.status_code}")
-                dialog = MDDialog(text=f"[size=25]Request gagal dengan status code: {response.status_code}[/size]", buttons=[MDFlatButton(text="[size=18]OK[/size]",
-                                    on_release=lambda x: dialog.dismiss())])
+            if not all_data:
+                dialog = MDDialog(text="[size=25]Data tidak ditemukan.[/size]",
+                                buttons=[MDFlatButton(text="[size=18]OK[/size]",
+                                                        on_release=lambda x: dialog.dismiss())])
                 dialog.open()
+                return
+
+            extracted_data = []
+            for item in all_data:
+                nrp = item.get("nrp")
+                face_encoding_str = item.get("face_encoding")
+                try:
+                    face_encoding = ast.literal_eval(face_encoding_str) if face_encoding_str else []
+                except:
+                    face_encoding = []
+                extracted_data.append({
+                    "nrp": nrp,
+                    "encodings": face_encoding
+                })
+
+            # Simpan ke file JSON
+            with open(json_path, "w") as json_file:
+                json.dump(extracted_data, json_file, indent=4)
+
+            # Simpan ke file Joblib
+            joblib.dump(extracted_data, joblib_path)
+
+            print(f"✅ Data berhasil disimpan ke:\n- {json_path}\n- {joblib_path}")
+            thread = threading.Thread(target=load_joblib_data)
+            thread.start()
+
+            # Menampilkan notifikasi sukses
+            success_content = MDBoxLayout(orientation='vertical', spacing=20, md_bg_color=(0, 0, 0, 0))
+            success_content.add_widget(Image(
+                source="assets/complete_icon.png",
+                size_hint=(1, None),
+                height=200,
+                pos_hint={"center_x": 0.5}
+            ))
+            success_container = MDBoxLayout(
+                size_hint=(None, None),
+                size=(dp(500), dp(60)),
+                pos_hint={"center_x": 0.5},
+                md_bg_color=(0.564, 0.874, 0.654, 1),
+                radius=[dp(25)] * 4,
+                padding=[20, 10, 20, 10]
+            )
+            success_label = MDLabel(
+                text="[size=25]Sinkronisasi data berhasil![/size]",
+                font_name="assets/GTVCS-Medium.ttf",
+                halign="center",
+                markup=True
+            )
+            success_container.add_widget(success_label)
+            success_content.add_widget(success_container)
+
+            self.success_dialog = MDDialog(
+                type="custom",
+                height=80,
+                radius=[dp(20)] * 4,
+                content_cls=success_content,
+                buttons=[MDFlatButton(
+                    text="[size=18]Tutup[/size]",
+                    on_release=lambda x: self.success_dialog.dismiss()
+                )]
+            )
+            self.success_dialog.open()
+            Clock.schedule_once(lambda x: self.success_dialog)
+
 
     def update_pagination_font(self, *args):
         if self.table:
@@ -1390,8 +1401,18 @@ class MainContent(BoxLayout):
                     cvzone.cornerRect(img, (x1, y1, w, h), colorC=color, colorR=color)
 
                     if classNames[cls] == 'real':
-                        face_crop = img[y1:y2, x1:x2]
-                        threading.Thread(target=recognize_face, args=(img_for_detection.copy(), self)).start()
+                        now = time.time()
+                        if not self.recognition_thread_running and (now - self.last_recognition_time > self.recognition_interval):
+                            self.recognition_thread_running = True
+                            self.last_recognition_time = now
+
+                            def recognition_done(*a):
+                                self.recognition_thread_running = False
+
+                            def thread_func():
+                                recognize_face(img_for_detection.copy(), self)
+                                Clock.schedule_once(recognition_done)
+                            threading.Thread(target=thread_func).start()
 
                         current_time = time.time()
                         recognized_faces = {nrp: (x, y, t) for nrp, (x, y, t) in recognized_faces.items() if
@@ -1797,12 +1818,13 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
 
         frame = cv2.flip(frame, 1)  # Flip vertikal agar tidak terbalik
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # Gunakan YOLO untuk mendeteksi wajah asli
         results = model(frame, stream=False, verbose=False)  # Gunakan frame asli (BGR)
         face_detected = False
         current_time = time.time()
-        locked_face = None
-        last_seen_time = 0
+        # Gunakan variabel instance agar tidak selalu None setiap frame
+        if not hasattr(self, "locked_face"):
+            self.locked_face = None
+            self.last_seen_time = 0
 
         for r in results:
             boxes = r.boxes
@@ -1813,45 +1835,62 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
                 cls = int(box.cls[0])
 
                 if conf > confidence and classNames[cls] == "real":
-                    # Gambar kotak hijau di sekitar wajah
+                    # Selalu gambar kotak hijau jika YOLO deteksi wajah real
                     cvzone.cornerRect(frame, (x1, y1, w, h), colorC=(0, 255, 0), colorR=(0, 255, 0))
+                    face_detected = True
 
                     if self.is_registering_face:
                         faces = app.get(img_rgb)
-                    # Ambil lokasi wajah
+                        # Cari wajah InsightFace yang paling overlap dengan deteksi YOLO
+                        best_face = None
+                        best_iou = 0
+                        for face in faces:
+                            fx1, fy1, fx2, fy2 = face.bbox.astype(int)
+                            xx1 = max(x1, fx1)
+                            yy1 = max(y1, fy1)
+                            xx2 = min(x2, fx2)
+                            yy2 = min(y2, fy2)
+                            inter_area = max(0, xx2 - xx1) * max(0, yy2 - yy1)
+                            box_area = (x2 - x1) * (y2 - y1)
+                            face_area = (fx2 - fx1) * (fy2 - fy1)
+                            union_area = box_area + face_area - inter_area
+                            iou = inter_area / union_area if union_area > 0 else 0
+                            if iou > best_iou:
+                                best_iou = iou
+                                best_face = face
+                        if best_face is not None and best_iou > 0.1:
+                            face_embedding = best_face.normed_embedding.tolist()
+                            if self.locked_face is None:
+                                self.locked_face = face_embedding
+                                self.last_seen_time = time.time()
 
+                            similarity = np.dot(self.locked_face, face_embedding)
+                            if similarity > 0.6:  # Ambang batas kemiripan
+                                self.face_encodings_list.append(face_embedding)
+                                progress_text = f"Progress data = {int((len(self.face_encodings_list)/15) * 100)}%..."
+                                Clock.schedule_once(lambda dt: self.update_registration_text(progress_text))
 
-                        if i < len(faces):  # Pastikan indeks valid
-                            face_embedding = faces[i].normed_embedding.tolist()
-                        if locked_face is None:
-                            locked_face = face_embedding
-                            last_seen_time = time.time()
+                                progress_value = (len(self.face_encodings_list) / 15) * 100
+                                self.update_progress_bar(progress_value)
 
-                        similarity = np.dot(locked_face, face_embedding)
-                        if similarity > 0.6:  # Ambang batas kemiripan
-                            self.face_encodings_list.append(face_embedding)
-                            progress_text = f"Progress data = {int((len(self.face_encodings_list)/15) * 100)}%..."
-                            Clock.schedule_once(lambda dt: self.update_registration_text(progress_text))
+                            if len(self.face_encodings_list) >= 15:
+                                self.save_face_data()
+                                self.stop_face_registration(is_cancelled=False)
+                                # Reset lock agar tidak error di frame berikutnya
+                                self.locked_face = None
+                                self.last_seen_time = 0
+                                return
 
-                            progress_value = (len(self.face_encodings_list) / 15) * 100
-                            self.update_progress_bar(progress_value)
+        # Jika wajah terkunci hilang lebih dari 3 detik, reset
+        if self.locked_face and not face_detected:
+            if (current_time - self.last_seen_time) > 3:
+                print("🔓 Wajah hilang! Mencari wajah baru...")
+                self.locked_face = None
+            else:
+                face_detected = True  # Jangan reset jika masih dalam durasi batas
 
-                        if len(self.face_encodings_list) >= 15:
-                            self.save_face_data()
-                            self.stop_face_registration(is_cancelled=False)  # ← ini wajib ditambahkan!
-                            return
-
-
-            # Jika wajah terkunci hilang lebih dari face_lock_duration, reset
-            if locked_face and not face_detected:
-                if (current_time - last_seen_time) > 3:
-                    print("🔓 Wajah hilang! Mencari wajah baru...")
-                    locked_face = None
-                else:
-                    face_detected = True  # Jangan reset jika masih dalam durasi batas
-
-            if face_detected:
-                last_seen_time = current_time  # Reset timer jika wajah terlihat
+        if face_detected:
+            self.last_seen_time = current_time  # Reset timer jika wajah terlihat
 
         h, w, _ = frame.shape
         x_center, y_center = w // 2, h // 2
@@ -1951,10 +1990,11 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             getattr(self, dialog_attr_name).dismiss()
 
         button = button_cls(
-            text="Tutup",
-            text_color=(0.203, 0.2, 0.2, 1),
-            on_release=close_dialog
+        text="Tutup",
+        text_color=(0.203, 0.2, 0.2, 1),
+        on_release=lambda x: getattr(self, dialog_attr_name).dismiss()
         )
+        
         if isinstance(button, MDRaisedButton):
             button.md_bg_color = button_color
 
@@ -2040,31 +2080,60 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
         Clock.schedule_once(lambda dt: self.dialog.dismiss(), duration)
 
     def save_face_data(self):
-        nrp = self.nrp_input.text
+        nrp = self.nrp_input.text.strip()
 
-        if self.face_encodings_list:
-            mean_encoding = np.mean(self.face_encodings_list, axis=0).tolist()
+        if not nrp:
+            print("❗ NRP kosong.")
+            return
 
-            database.append({"nrp": nrp, "encodings": mean_encoding})
-            with open(database_json, "w") as file:
-                json.dump(database, file, indent=4)
-            print(f"✅ Data wajah {nrp} berhasil disimpan di {database_json}")
+        if not self.face_encodings_list:
+            print("❗ Tidak ada data wajah.")
+            return
 
-            # Simpan data ke joblib
-            database_joblib_data.append({"nrp": nrp, "encodings": mean_encoding})
-            joblib.dump(database_joblib_data, joblib_file)
-            print(f"✅ Data wajah {nrp} berhasil disimpan di {joblib_file}")
+        mean_encoding = np.mean(self.face_encodings_list, axis=0).tolist()
 
-            # KIRIM KE SERVER TANPA NAME
-            data_to_send = [{"nrp": str(nrp), "encodings": mean_encoding}]
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(Regis_URL, json=data_to_send, headers=headers)
+        # Kirim ke server lebih dulu
+        data_to_send = [{"nrp": str(nrp), "encodings": mean_encoding}]
+        headers = {"Content-Type": "application/json"}
 
+        try:
+            response = requests.post(Regis_URL, json=data_to_send, headers=headers, timeout=10)
             print(f"📡 Status: {response.status_code}")
+            print(f"📡 Response: {response.text}")
 
+            if response.status_code != 200:
+                self.show_failed_dialog(f"Gagal kirim ke server. Status: {response.status_code}")
+                return
+
+        except Exception as e:
+            print("❌ Error saat mengirim ke server:", str(e))
+            self.show_failed_dialog("Tidak dapat menghubungi server.\nPastikan Anda terhubung ke internet.")
+            return
+
+        # Jika berhasil kirim ke server, baru simpan lokal
+        database.append({"nrp": nrp, "encodings": mean_encoding})
+        with open(database_json, "w") as file:
+            json.dump(database, file, indent=4)
+        print(f"✅ Data wajah {nrp} berhasil disimpan di {database_json}")
+
+        database_joblib_data.append({"nrp": nrp, "encodings": mean_encoding})
+        joblib.dump(database_joblib_data, joblib_file)
+        print(f"✅ Data wajah {nrp} berhasil disimpan di {joblib_file}")
+
+        # Reset registrasi
         self.is_registering_face = False
         self.face_encodings_list = []
         self.stop_face_registration()
+
+    def show_failed_dialog(self, message):
+        dialog = MDDialog(
+            title="Registrasi Gagal",
+            text=message,
+            buttons=[MDFlatButton(text="OK", on_release=lambda x: dialog.dismiss())]
+        )
+        dialog.open()
+
+
 
 class ColoredCell(BoxLayout):
     def __init__(self, text, bg_color, **kwargs):
