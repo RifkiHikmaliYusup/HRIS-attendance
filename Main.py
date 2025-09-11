@@ -6,7 +6,6 @@ from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
 from kivy.graphics.texture import Texture
 from kivymd.uix.datatables import MDDataTable
-from kivy.metrics import dp
 from kivymd.uix.label import MDLabel
 from kivymd.uix.menu import MDDropdownMenu
 from kivymd.uix.textfield import MDTextField
@@ -25,7 +24,6 @@ from kivy.uix.vkeyboard import VKeyboard
 from kivymd.uix.progressbar import MDProgressBar
 from kivy.uix.relativelayout import RelativeLayout
 from kivymd.uix.selectioncontrol import MDCheckbox
-from kivymd.uix.textfield import MDTextField
 from kivy.uix.scrollview import ScrollView
 from kivymd.uix.card import MDCard
 
@@ -43,14 +41,14 @@ from ultralytics import YOLO
 from insightface.app import FaceAnalysis
 import time
 import threading
-import ast
+import ast  
 
 #Window.borderless = True
 Window.fullscreen = True
 
 # URL API absensi
-API_URL = "https://hrd.asmat.app/api/v2/absen"
-Regis_URL = "https://hrd.asmat.app/api/v2/face-recognition/register"
+API_URL = "https://dev.hrd.asmat.app/api/v1/absen-test"
+Regis_URL = "https://dev.asmat.app/api/v2/face-recognition/register"
 
 model = YOLO("model/l_versions_3_100.pt")
 classNames = ["fake", "real"]
@@ -62,6 +60,10 @@ app.prepare(ctx_id=-1)
 capture_folder = "./static/captures"
 os.makedirs(capture_folder, exist_ok=True)  # Buat folder jika belum ada
 
+# Path folder cache untuk gambar peta
+cache_folder = "./cache"
+os.makedirs(cache_folder, exist_ok=True)  # Buat folder jika belum ada
+
 data_json = "./Data Pegawai/Json/data_table.json"
 os.makedirs(os.path.dirname(data_json), exist_ok=True)
 
@@ -69,7 +71,7 @@ database_json = "./Data Pegawai/Json/database.json"
 # Load data wajah dari folder Joblib
 joblib_file = "./Data Pegawai/Joblib/database.joblib"
 
-confidence = 0.6
+confidence = 0.75
 last_seen = {}  # Dictionary untuk menyimpan status wajah terakhir terlihat
 face_data = {}
 loading_done = False  # Indikator bahwa proses load selesai
@@ -112,7 +114,10 @@ def load_joblib_data():
         if isinstance(data, list):  # Cek apakah data dalam format list
             for entry in data:
                 if 'nrp' in entry and 'encodings' in entry:
-                    face_data[entry['nrp']] = np.array(entry['encodings'])
+                    face_data[entry['nrp']] = {
+                        'encodings': np.array(entry['encodings']),
+                        'nama': entry.get('nama', '')  # Ambil nama dari data
+                    }
                 else:
                     print(f"⚠ Data tidak valid: {entry}")
         else:
@@ -141,7 +146,8 @@ def recognize_face(img, main_content):
         face_encoding = np.array(face.normed_embedding)
 
         matched_nrps = []
-        for nrp, stored_encoding in face_data.items():
+        for nrp, face_info in face_data.items():
+            stored_encoding = face_info['encodings']
             similarity = cosine_similarity(face_encoding, stored_encoding)
             if similarity > 0.7:
                 matched_nrps.append(nrp)
@@ -536,41 +542,39 @@ class MainContent(BoxLayout):
         self.size_hint = (0.8, 1)
         self.padding = dp(10)
         self.last_recognition_time = 0
-        self.recognition_interval = 0.5  # detik, atur sesuai kebutuhan
+        self.recognition_interval = 0.5
         self.recognition_thread_running = False
-        # Panggil hapus_file_capture setiap 600 detik (10 menit)
         Clock.schedule_interval(self.hapus_file_capture, 600)
+        Clock.schedule_interval(self.hapus_file_cache, 300)  # Hapus file cache setiap 5 menit
 
         with self.canvas.before:
             Color(1, 1, 1, 1)
             self.rect = Rectangle(size=self.size, pos=self.pos)
 
-        # Gunakan nilai dari variabel kelas
         self.manual_lat = MainContent.manual_lat
         self.manual_lon = MainContent.manual_lon
         Clock.schedule_once(lambda dt: self.update_location(lat=self.manual_lat, lon=self.manual_lon), 2)
         locale.setlocale(locale.LC_TIME, "id_ID.utf8")
         self.bind(size=self.update_rect, pos=self.update_rect)
 
+        
+        # HEADER
         header_layout = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(200), pos_hint={"center_x":0.5, "y":0.1}, padding=10, spacing=10)
-
         self.company_logo = Image(
             source="assets/tbk.png",
             size_hint=(1, 1)
         )
-
-        # Tambahkan profile logo dengan event handler
         self.sync_logo = Image(
             source="assets/sync_icon.png",
             size_hint=(1, 0.7),
             pos_hint={"center_y":0.5}
         )
         self.sync_logo.bind(on_touch_down=self.on_sync_logo_pressed)
-
         header_layout.add_widget(self.company_logo)
         header_layout.add_widget(self.sync_logo)
         self.add_widget(header_layout)
 
+        # INFO TANGGAL & LOKASI
         info_container = MDBoxLayout(
             size_hint=(None, None),
             size=(dp(800), dp(80)),
@@ -579,11 +583,10 @@ class MainContent(BoxLayout):
             radius=[dp(25), dp(25), dp(25), dp(25)],
             padding=[20, 10, 20, 10]
         )
-
         self.date_label = MDLabel(
             text=self.get_today_date(),
             theme_text_color="Custom",
-            text_color=(0.203, 0.2, 0.2, 1),  # Warna putih
+            text_color=(0.203, 0.2, 0.2, 1),
             pos_hint={"center_y":0.5},
             halign="left",
             font_size="25sp",
@@ -591,7 +594,6 @@ class MainContent(BoxLayout):
             height=dp(80),
         )
         self.date_label.font_size = dp(23)
-
         location_container = MDBoxLayout(
             size_hint=(None, None),
             size=(dp(400), dp(60)),
@@ -600,7 +602,6 @@ class MainContent(BoxLayout):
             radius=[dp(25), dp(25), dp(25), dp(25)],
             padding=[20, 10, 20, 10]
         )
-
         self.location_label= MDLabel(
             text=f"Lat: {self.manual_lat}, Lon: {self.manual_lon}",
             theme_text_color="Custom",
@@ -613,17 +614,16 @@ class MainContent(BoxLayout):
             height=dp(80)
         )
         location_container.add_widget(self.location_label)
-        self.location_label.font_size = dp(23)  # Pakai dp() untuk memastikan skala tetap
+        self.location_label.font_size = dp(23)
         location_container.bind(on_touch_down=self.open_map_page)
-
         font_path = "assets/GTVCS-Medium.ttf"
         self.date_label.font_name = font_path
         self.location_label.font_name = font_path
-
         info_container.add_widget(self.date_label)
         info_container.add_widget(location_container)
         self.add_widget(info_container)
 
+        # JAM
         self.time_label = MDLabel(
             text="00:00:00",
             theme_text_color="Custom",
@@ -637,17 +637,30 @@ class MainContent(BoxLayout):
         )
         self.time_label.font_size = dp(25)
         self.add_widget(self.time_label)
-
         self.time_label.font_name = font_path
         Clock.schedule_interval(self.update_time, 0.5)
+        Clock.schedule_interval(self.update_date, 60)
 
-        # Layout untuk kamera dan instruksi di dalamnya
+        # NOTIFIKASI ABSENSI DI BAWAH JAM
+        self.absen_notif_label = MDLabel(
+            text="",
+            theme_text_color="Custom",
+            text_color=(0, 0.6, 0, 1),
+            font_name="assets/GTVCS-Medium.ttf",
+            halign="center",
+            font_size=dp(22),
+            size_hint=(1, None),
+            height=dp(50),
+            markup=True
+        )
+        self.absen_notif_label.opacity = 0
+        self.add_widget(self.absen_notif_label)
+
+        # KAMERA DAN INSTRUKSI
         self.camera_layout = RelativeLayout(
             size_hint=(1,1),
             pos_hint={"center_x": 0.5, "y":0.5}
         )
-
-        # Kamera Webcam
         self.camera_display = Image(size_hint=(1, 1), pos_hint={"center_x": 0.5, "center_y": 0.5})
         self.instruction_container = MDBoxLayout(
             size_hint=(None, None),
@@ -657,7 +670,6 @@ class MainContent(BoxLayout):
             radius=[dp(10), dp(10), dp(10), dp(10)],
             padding=[10, 5, 10, 5]
         )
-
         self.instruction_main = MDLabel(
             text="Fokuskan wajah Anda pada kamera",
             theme_text_color="Custom",
@@ -669,30 +681,26 @@ class MainContent(BoxLayout):
             height=dp(80)
         )
         self.instruction_main.font_size = dp(20)
-
         self.instruction_container.add_widget(self.instruction_main)
         self.camera_layout.add_widget(self.camera_display)
         self.camera_layout.add_widget(self.instruction_container)
         self.instruction_main.font_name = font_path
         self.add_widget(self.camera_layout)
 
-        # Filter
+        
+        # FILTER
         filter_layout = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(100), pos_hint={"center_y":0.4}, padding=(10, 10))
-        # filter nama
         self.name_filter = MDTextField(
-            hint_text="Cari NRP...",
+            hint_text="Cari Nama...",
             size_hint_x=0.2,
             font_size="20sp",
             font_name="assets/GTVCS-Medium",
             on_text_validate=self.filter_table
         )
-
         self.time_filter_btn = MDRaisedButton(
             text="Semua", size_hint_x=1, md_bg_color=(0.631, 0.694, 0.909, 1), text_color=(0.203, 0.2, 0.2, 1),
             font_size="20sp",font_name="assets/GTVCS-Medium", on_release=self.open_time_menu
         )
-
-        # dropdown waktu
         self.time_menu = MDDropdownMenu(
             caller=self.time_filter_btn,
             items=[
@@ -708,7 +716,6 @@ class MainContent(BoxLayout):
             ],
             width_mult=3
         )
-
         self.cap = None
         filter_layout.add_widget(self.name_filter)
         filter_layout.add_widget(self.time_filter_btn)
@@ -717,12 +724,36 @@ class MainContent(BoxLayout):
         self.original_data = []
         self.filtered_data = []
         self.load_table_data()
+        self.last_checked_date = datetime.today().strftime("%Y-%m-%d")
+        Clock.schedule_interval(self.check_new_day, 60)
         self.vkeyboard = None
         self.name_filter.bind(focus=self.show_keyboard)
-        self.lat_input = None  # 🟢 Pastikan atribut ada, meskipun None
-        self.lon_input = None  # 🟢 Pastikan atribut ada, meskipun None
+        self.lat_input = None
+        self.lon_input = None
+        Clock.schedule_interval(self.check_internet_connection, 10)
+    
 
-        Clock.schedule_interval(self.check_internet_connection, 10)  # setiap 10 detik
+    def show_absen_notif(self, nrp, status, waktu):
+        # Tampilkan nama bukan NRP
+        nama = face_data.get(nrp, {}).get('nama', nrp)  # Ambil nama, jika tidak ada gunakan NRP
+        self.absen_notif_label.text = f"[b]{nama}[/b]\n{status}\n{waktu}"
+        self.absen_notif_label.opacity = 1
+        Clock.schedule_once(lambda dt: self.hide_absen_notif(), 2)
+
+    def hide_absen_notif(self):
+        self.absen_notif_label.opacity = 0
+
+
+    def update_date(self, dt):
+        self.date_label.text = self.get_today_date()
+
+
+    def check_new_day(self, dt):
+        today = datetime.today().strftime("%Y-%m-%d")
+        if today != self.last_checked_date:
+            print("🔄 Hari baru terdeteksi, data absensi direset otomatis!")
+            self.last_checked_date = today
+            self.load_table_data()
 
 
     def show_no_internet_dialog(self):
@@ -876,6 +907,9 @@ class MainContent(BoxLayout):
             self.marker = MapMarker(lat=self.manual_lat, lon=self.manual_lon)
             self.mapview.add_widget(self.marker)
 
+            # Simpan screenshot peta ke cache
+            self.take_map_screenshot()
+
             # Layout untuk input latitude dan longitude
             input_layout = BoxLayout(
                 orientation="vertical",
@@ -962,6 +996,16 @@ class MainContent(BoxLayout):
 
             self.add_widget(main_layout)
             
+    def take_map_screenshot(self):
+        """Mengambil screenshot peta dan menyimpannya ke folder cache"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"map_screenshot_{timestamp}.png"
+        filepath = os.path.join(cache_folder, filename)
+        
+        # Simpan screenshot peta
+        self.mapview.export_to_png(filepath)
+        print(f"📸 Screenshot peta disimpan: {filepath}")
+            
     def show_keyboard(self, instance, value):
         """Menampilkan atau menyembunyikan keyboard virtual ketika MDTextField mendapatkan fokus"""
         if value:  # Jika field mendapatkan fokus
@@ -1037,32 +1081,8 @@ class MainContent(BoxLayout):
             self.location_label.text = f"Lat: {new_lat}, Lon: {new_lon}"
             print(f"Marker diperbarui ke: {new_lat}, {new_lon}")  # Debugging
 
-        except ValueError:
-            print("Masukkan koordinat yang valid!")
-
-    def update_marker_location(self, instance):
-        """Memperbarui marker di MapView berdasarkan input latitude dan longitude"""
-        try:
-            new_lat = float(self.lat_input.text)
-            new_lon = float(self.lon_input.text)
-
-            # Perbarui variabel kelas
-            MainContent.manual_lat = new_lat
-            MainContent.manual_lon = new_lon
-
-            self.manual_lat = new_lat
-            self.manual_lon = new_lon
-
-            self.mapview.center_on(new_lat, new_lon)
-
-            if hasattr(self, 'marker'):
-                self.mapview.remove_widget(self.marker)
-
-            self.marker = MapMarker(lat=new_lat, lon=new_lon)
-            self.mapview.add_widget(self.marker)
-
-            self.location_label.text = f"Lat: {new_lat}, Lon: {new_lon}"
-            print(f"Marker diperbarui ke: {new_lat}, {new_lon}")  # Debugging
+            # Simpan screenshot peta ke cache
+            self.take_map_screenshot()
 
             # Menampilkan notifikasi menggunakan MDDialog
             self.show_update_success_dialog()
@@ -1118,7 +1138,7 @@ class MainContent(BoxLayout):
 
     def on_sync_logo_pressed(self, instance, touch):
         # URL API dasar
-        base_url = "https://hrd.asmat.app/api/v2/face-recognition"
+        base_url = "https://dev.hrd.asmat.app/api/v2/face-recognition"
 
         # Lokasi penyimpanan file JSON dan Joblib
         json_path = "./Data Pegawai/Json/database.json"
@@ -1157,6 +1177,7 @@ class MainContent(BoxLayout):
             extracted_data = []
             for item in all_data:
                 nrp = item.get("nrp")
+                nama = item.get("nama", "")
                 face_encoding_str = item.get("face_encoding")
                 try:
                     face_encoding = ast.literal_eval(face_encoding_str) if face_encoding_str else []
@@ -1164,6 +1185,7 @@ class MainContent(BoxLayout):
                     face_encoding = []
                 extracted_data.append({
                     "nrp": nrp,
+                    "nama": nama,
                     "encodings": face_encoding
                 })
 
@@ -1215,6 +1237,12 @@ class MainContent(BoxLayout):
             )
             self.success_dialog.open()
             Clock.schedule_once(lambda x: self.success_dialog)
+    
+    def after_checkout(self, *args):
+        self.is_checkout_mode = False
+        self.instruction_main.text = "Fokuskan wajah Anda pada kamera"
+        self.checkout_button.disabled = False
+        self.checkout_button.opacity = 1
 
 
     def update_pagination_font(self, *args):
@@ -1245,12 +1273,12 @@ class MainContent(BoxLayout):
             pos_hint={"center_x": 0.5, "center_y": 0.5},
             use_pagination=True,
             column_data=[
-                ("[font=assets/GTVCS-Medium.ttf][size=25]NRP[/size][/font]", dp(50)),
+                ("[font=assets/GTVCS-Medium.ttf][size=25]Nama[/size][/font]", dp(50)),
                 ("[font=assets/GTVCS-Medium.ttf][size=25]Status[/size][/font]", dp(70)),
                 ("[font=assets/GTVCS-Medium.ttf][size=25]Waktu[/size][/font]", dp(50))
             ],
             row_data=[
-                (f"[size=21]{nrp}[/size]", f"[size=21]{status}[/size]", f"[size=21]{waktu}[/size]")
+                (f"[size=21]{self.get_nama_from_nrp(nrp)}[/size]", f"[size=21]{status}[/size]", f"[size=21]{waktu}[/size]")
                 for nrp, status, waktu in self.filtered_data
             ]
 
@@ -1258,11 +1286,15 @@ class MainContent(BoxLayout):
         self.add_widget(self.table)
         Clock.schedule_once(lambda dt: self.update_pagination_font(), 0.1)
 
+    def get_nama_from_nrp(self, nrp):
+        """Mendapatkan nama dari NRP"""
+        return face_data.get(nrp, {}).get('nama', nrp)  # Kembalikan nama jika ada, jika tidak kembalikan NRP
 
     def add_to_table(self, nrp, status, waktu):
         """Menambahkan data absensi ke tabel dengan ukuran teks yang disesuaikan"""
+        nama = self.get_nama_from_nrp(nrp)  # Dapatkan nama dari NRP
         new_entry = (
-            f"{nrp}",
+            f"{nama}",
             f"{status}",
             f"{waktu}"
         )
@@ -1308,24 +1340,28 @@ class MainContent(BoxLayout):
             self.create_table()
 
     def process_server_response(self, nrp, response_data):
-        """Menangani respons dari server dan menambahkan data ke tabel."""
-
         message = response_data.get("message", "Unknown Status")
         waktu_full = response_data.get("data", {}).get("waktu", "Unknown Time")
 
-        # Konversi waktu ke format jam (HH:MM:SS)
         try:
             waktu_obj = datetime.strptime(waktu_full, "%Y-%m-%d %H:%M:%S")
             waktu = waktu_obj.strftime("%H:%M:%S")
+            tanggal = waktu_obj.strftime("%Y-%m-%d")
         except ValueError:
             waktu = "Unknown Time"
-
-        if "sudah check" in message.lower():
+        
+        if " sudah check" in message.lower():
             self.add_to_table(nrp, message, waktu)  # Hapus pengecekan absensi_tercatat
-
-        # Jika berhasil check-in/check-out, selalu tambahkan
+            self.show_absen_notif(nrp, message, waktu)
+        
+         # Jika berhasil check-in/check-out, selalu tambahkan
         elif "check in berhasil" in message.lower() or "check out berhasil" in message.lower():
             self.add_to_table(nrp, message, waktu)
+            self.show_absen_notif(nrp, message, waktu)
+
+
+
+             
 
     def filter_table(self, instance=None):
         name_filter = self.name_filter.text.lower()
@@ -1393,7 +1429,7 @@ class MainContent(BoxLayout):
             for box in boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 w, h = x2 - x1, y2 - y1
-                conf = math.ceil((box.conf[0] * 100)) / 100
+                conf = float(box.conf[0])  # Perbaikan di sini
                 cls = int(box.cls[0])
 
                 if conf > confidence:
@@ -1418,12 +1454,36 @@ class MainContent(BoxLayout):
                         recognized_faces = {nrp: (x, y, t) for nrp, (x, y, t) in recognized_faces.items() if
                                             current_time - t < 2}
 
-                        # **Tampilkan teks NRP dari dictionary `recognized_faces`**
+                        # **Tampilkan teks Nama dari dictionary `recognized_faces`**
+                        valid_faces = {}
+
                         for nrp, (x1, y1, _) in recognized_faces.items():
-                            label = "Tidak Dikenal" if nrp == "Unknown" else f"NRP: {nrp}"
-                            color = (0, 0, 255) if nrp == "Unknown" else (0, 255, 0)
+                            # Jika wajah sudah dikenali, prioritaskan dan buang Unknown yang tumpang tindih
+                            if nrp != "Unknown":
+                                valid_faces[nrp] = (x1, y1, _)
+
+                        # Kalau tidak ada wajah valid sama sekali, baru tampilkan Unknown
+                        if not valid_faces:
+                            valid_faces = recognized_faces
+
+                        for nrp, (x1, y1, _) in valid_faces.items():
+                            if nrp == "Unknown":
+                                label = "Tidak Dikenal"
+                                color = (0, 0, 255)
+                            else:
+                                nama = face_data.get(nrp, {}).get('nama', nrp)
+                                label = f"Nama: {nama}"
+                                color = (0, 255, 0)
+
                             mirrored_text_x = frame_width - x1
-                            cvzone.putTextRect(img, label, (max(0, mirrored_text_x), max(100, y1)), scale=1.5, thickness=2, colorR=color)
+                            cvzone.putTextRect(
+                                img,
+                                label,
+                                (max(0, mirrored_text_x), max(100, y1)),
+                                scale=1.5,
+                                thickness=2,
+                                colorR=color
+                            )
 
             # 🔥 Crop Bagian Tengah ke 850x900
         h, w, _ = img.shape
@@ -1442,16 +1502,29 @@ class MainContent(BoxLayout):
         texture.blit_buffer(img.tobytes(), colorfmt='rgb', bufferfmt='ubyte')
 
         self.camera_display.texture = texture
-
+    
     def send_to_server(self, nrp, image_path_local, callback=None):
         """Mengirim data ke server dalam thread, lalu menjalankan callback dengan respons."""
+
+        """Pengecekan lokasi valid"""
+        if not hasattr(self, 'manual_lat') or not hasattr(self, 'manual_lon'):
+            Clock.schedule_once(lambda dt: self.show_server_error_dialog("Lokasi tidak valid"))
+            return
 
         def thread_task():
             """Fungsi yang berjalan dalam thread."""
             
+            """
+            Mengirim data presensi ke server termasuk:
+            - Foto wajah
+            - NRP
+            - Koordinat latitude dan longitude
+            """
             with open(image_path_local, "rb") as image_file:
                 files = {"foto": (os.path.basename(image_path_local), image_file, "image/jpeg")}
-                data = {"nrp": str(nrp)}
+                data = {"nrp": str(nrp),
+                        "latitude": str(self.manual_lat),
+                        "longitude": str(self.manual_lon)}
 
                 try:
                     response = requests.post(API_URL, data=data, files=files)
@@ -1508,45 +1581,103 @@ class MainContent(BoxLayout):
         except Exception as e:
             print(f"❌ Gagal menghapus file: {e}")
 
-class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
+    def hapus_file_cache(self, *args):
+        """Hapus file yang lebih dari 5 menit di folder ./cache."""
+        now = time.time()
+        try:
+            for filename in os.listdir(cache_folder):
+                file_path = os.path.join(cache_folder, filename)
+                if os.path.isfile(file_path):
+                    # Hitung usia file
+                    file_age = now - os.path.getmtime(file_path)
+                    if file_age > 300:  # 5 menit = 300 detik
+                        try:
+                            os.remove(file_path)
+                            print(f"🗑 File cache {file_path} dihapus (usia: {file_age:.2f} detik).")
+                        except Exception as e:
+                            print(f"❌ Gagal menghapus {file_path}: {e}")
+        except Exception as e:
+            print(f"❌ Gagal menghapus file cache: {e}")
+    
+
+class Registration(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.layout = RelativeLayout()
         self.add_widget(self.layout)
         self.size_hint = (0.8, 1)
 
-        # Tambahkan company_logo di atas regist_graphic
+        # Logo perusahaan
         self.company_logo = Image(
             source="assets/tbk_reg.png",
             size_hint=(1, None),
             height=dp(150),
-            keep_ratio = True,  # Agar rasio tidak berubah
-            allow_stretch = True,  # Biar gambar tetap bisa menyesuaikan
-            pos_hint={"center_x":0.5, "top":0.95}
+            keep_ratio=True,
+            allow_stretch=True,
+            pos_hint={"center_x": 0.5, "top": 0.95}
         )
 
-        # Tambahkan regist_graphic sebagai background
+        # Background graphic
         self.regist_graphic = Image(
             source="assets/regist_graphic.png",
-            size_hint=(1, None),  # Ukuran penuh
+            size_hint=(1, None),
             height=dp(1700),
-            keep_ratio=True,  # Agar rasio tidak berubah
-            allow_stretch=True,  # Biar gambar tetap bisa menyesuaikan
-            pos_hint={"center_x": 0.5, "bottom":1}  # Posisi tengah
+            keep_ratio=True,
+            allow_stretch=True,
+            pos_hint={"center_x": 0.5, "bottom": 1}
         )
 
-        # Container untuk input nama
+        # Progress bar container (ungu)
+        self.progressbar_container = MDBoxLayout(
+            orientation='vertical',
+            size_hint=(None, None),
+            size=(dp(900), dp(60)),
+            pos_hint={"center_x": 0.5, "top": 0.78},
+            md_bg_color=(0.219, 0.262, 0.411, 1),
+            radius=[dp(15), dp(15), dp(15), dp(15)],
+            padding=[30, 10, 30, 10]
+        )
+        self.progressbar_bg = MDBoxLayout(
+            orientation='vertical',
+            size_hint=(1, 1),
+            md_bg_color=(0.95, 0.95, 0.95, 1),
+            radius=[dp(15), dp(15), dp(15), dp(15)],
+            padding=[5, 5, 5, 5]
+        )
+        self.progress_label = MDLabel(
+            text="Progress data = 0%...",
+            halign="center",
+            theme_text_color="Custom",
+            text_color=(0, 0, 0, 1),
+            font_size=dp(18),
+            size_hint_y=None,
+            height=dp(30),
+        )
+        self.registration_progressbar = MDProgressBar(
+            size_hint_x=1,
+            height=dp(10),
+            color=(0.631, 0.694, 0.909, 1),
+            radius=[dp(15), dp(15), dp(15), dp(15)],
+            value=0,
+        )
+        self.progress_label.opacity = 1
+        self.registration_progressbar.opacity = 1
+        self.progress_label.text_color = (0, 0, 0, 1)  # Hitam
+        self.progressbar_bg.add_widget(self.progress_label)
+        self.progressbar_bg.add_widget(self.registration_progressbar)
+        self.progressbar_container.add_widget(self.progressbar_bg)
+
+        # Container instruksi registrasi
         self.registration_text_container = MDBoxLayout(
             orientation='vertical',
             size_hint=(None, None),
-            size=(dp(700), dp(100)),
-            pos_hint={"center_x": 0.5, "y": 0.6},
+            size=(dp(700), dp(50)),
+            pos_hint={"center_x": 0.5, "top": 0.85},  # <-- Sekarang dekat logo
             md_bg_color=(0.909, 0.850, 0.760, 1),
             radius=[dp(25), dp(25), dp(25), dp(25)],
-            padding=10
+            padding=5
         )
 
-        # Tambahkan registration_label
         self.registration_label = MDLabel(
             text="Proses registrasi, mohon arahkan wajah pada kamera",
             halign="center",
@@ -1556,31 +1687,20 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             size_hint_y=None,
             height=dp(40),
         )
-        self.registration_label.font_size = dp(20)  # Paksa ukuran font lebih besar
-
-        self.registration_progressbar = MDProgressBar(
-            size_hint_x=1,
-            height=dp(10),
-            color=(0.219, 0.262, 0.411, 1),
-            radius=[dp(15), dp(15), dp(15), dp(15)],
-            value=0
-        )
-       
-        self.registration_text_container.add_widget(self.registration_progressbar)
+        self.registration_label.font_size = dp(20)
         self.registration_text_container.add_widget(self.registration_label)
-        self.registration_text_container.opacity = 0
+        self.registration_text_container.opacity = 1
 
-        # Layout untuk input nama dan NRP
+
+        # Layout input nama & NRP
         self.input_layout = BoxLayout(
             orientation="vertical",
             size_hint_y=None,
             height=dp(200),
             padding=20,
             spacing=50,
-            pos_hint={"center_x": 0.5, "y":0.26}
+            pos_hint={"center_x": 0.5, "y": 0.26}
         )
-
-        # Container untuk input NRP
         self.nrp_container = MDBoxLayout(
             size_hint=(None, None),
             size=(dp(560), dp(110)),
@@ -1599,7 +1719,6 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
         )
         self.nrp_container.add_widget(self.nrp_input)
 
-        # Tombol untuk memulai registrasi wajah
         self.register_button = MDRaisedButton(
             text="Daftarkan\nWajah",
             size_hint=(0.25, None),
@@ -1610,7 +1729,6 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             font_name="assets/GTVCS-Medium.ttf",
             on_release=self.start_face_registration
         )
-
         self.cancel_registration_button = MDRaisedButton(
             text="Batalkan\nPendaftaran",
             size_hint=(0.25, None),
@@ -1621,71 +1739,65 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             font_name="assets/GTVCS-Medium.ttf",
             on_release=self.cancel_registration
         )
-
-        # Tambahkan container ke input_layout
         self.cancel_registration_button.opacity = 0
         self.cancel_registration_button.disabled = True
         self.input_layout.add_widget(self.nrp_container)
         self.input_layout.add_widget(self.cancel_registration_button)
         self.input_layout.add_widget(self.register_button)
 
+        # Layout kamera
         self.camera_layout = RelativeLayout(
-            size_hint=(1,1),
+            size_hint=(1, 1),
             pos_hint={"center_x": 0.5, "center_y": 0.66}
         )
-
-        # Container untuk input nama
         self.camera_container = MDBoxLayout(
             size_hint=(None, None),
-            size = (dp(850), dp(750)),
+            size=(dp(850), dp(750)),
             pos_hint={"center_x": 0.5, "center_y": 0.5},
             radius=[dp(5), dp(5), dp(5), dp(5)],
             orientation="vertical",
             md_bg_color=(0.219, 0.262, 0.411, 1)
         )
-
-        self.camera_display = Image(size_hint=(None, None), size = (dp(790), dp(750)),
-                                    pos_hint={"center_x": 0.5, "center_y": 0.5})
+        self.camera_display = Image(
+            size_hint=(None, None),
+            size=(dp(790), dp(750)),
+            pos_hint={"center_x": 0.5, "center_y": 0.5}
+        )
         self.camera_layout.add_widget(self.camera_container)
         self.camera_layout.add_widget(self.camera_display)
-        self.camera_layout.add_widget(self.registration_text_container)
 
-        # Tambahkan input_layout ke MainContent
-        self.add_widget(self.regist_graphic)
-        self.add_widget(self.company_logo)
-        self.add_widget(self.camera_layout)
-        self.add_widget(self.input_layout)
+        # Tambahkan urutan widget ke layout utama
+        self.layout.add_widget(self.regist_graphic)
+        self.layout.add_widget(self.company_logo)
+        self.layout.add_widget(self.progressbar_container)
+        self.layout.add_widget(self.camera_layout)
+        self.layout.add_widget(self.input_layout)
+        self.layout.add_widget(self.registration_text_container)  # <-- Sekarang di atas kamera
 
         self.cap = None
         self.vkeyboard = None
         self.is_registering_face = False
         self.face_encodings_list = []
         self.nrp_input.bind(focus=self.show_keyboard)
-        self.update_progress_bar(70)
-    
-# Fungsi untuk update value dengan animasi halus
+        self.update_progress_bar(0)
+
     def update_progress_bar(self, value):
         Animation(value=value, duration=0.5).start(self.registration_progressbar)
+        self.progress_label.text = f"Progress data = {int(value)}%..."
 
     def on_enter(self):
-        """Aktifkan kamera hanya jika masuk ke Registration"""
-
         self.cap = CameraSingleton.get_instance(screen_name="Registration")
         if self.cap is None or not self.cap.isOpened():
             self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
         Clock.schedule_interval(self.update_camera_reg, 1.0 / 30.0)
 
     def on_leave(self):
-        """Matikan kamera saat keluar dari Registration"""
         self.stop_camera()
         CameraSingleton.release(screen_name="Registration")
 
     def stop_camera(self):
-        """Hentikan update kamera"""
         Clock.unschedule(self.update_camera_reg)
         if self.cap is not None:
             self.cap.release()
@@ -1694,7 +1806,6 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
     def update_rect(self, *args):
         self.rect.size = self.size
         self.rect.pos = self.pos
-
 
 
     def start_face_registration(self, *args):
@@ -1831,7 +1942,7 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             for i, box in enumerate(boxes):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 w, h = x2 - x1, y2 - y1
-                conf = round(box.conf[0].item(), 2)
+                conf = float(box.conf[0])  # Perbaikan di sini
                 cls = int(box.cls[0])
 
                 if conf > confidence and classNames[cls] == "real":
@@ -2104,6 +2215,19 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             if response.status_code != 200:
                 self.show_failed_dialog(f"Gagal kirim ke server. Status: {response.status_code}")
                 return
+            
+             # Ambil nama dari respons server
+            resp_json = response.json()
+            # Sesuaikan dengan struktur respons server Anda!
+            # Misal: {"data": {"nrp": "...", "nama": "...", ...}}
+            nama = ""
+            if "data" in resp_json and isinstance(resp_json["data"], dict):
+                nama = resp_json["data"].get("nama", "")
+            elif "nama" in resp_json:
+                nama = resp_json.get("nama", "")
+            else:
+                nama = ""  # fallback jika tidak ada
+
 
         except Exception as e:
             print("❌ Error saat mengirim ke server:", str(e))
@@ -2111,12 +2235,12 @@ class Registration(Screen):  # Ganti BoxLayout dengan RelativeLayout
             return
 
         # Jika berhasil kirim ke server, baru simpan lokal
-        database.append({"nrp": nrp, "encodings": mean_encoding})
+        database.append({"nrp": nrp, "nama":nama, "encodings": mean_encoding})
         with open(database_json, "w") as file:
             json.dump(database, file, indent=4)
         print(f"✅ Data wajah {nrp} berhasil disimpan di {database_json}")
 
-        database_joblib_data.append({"nrp": nrp, "encodings": mean_encoding})
+        database_joblib_data.append({"nrp": nrp, "nama": nama, "encodings": mean_encoding})
         joblib.dump(database_joblib_data, joblib_file)
         print(f"✅ Data wajah {nrp} berhasil disimpan di {joblib_file}")
 
